@@ -1,0 +1,135 @@
+:root{
+  --bg:#0f1724; /* deep navy */
+  --card:#0b1220;
+  --muted:#9aa8bf;
+  --accent:#6ee7b7; /* mint */
+  --accent-2:#60a5fa;
+  --glass: rgba(255,255,255,0.04);
+}
+*{box-sizing:border-box;font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial}
+body{margin:0;background:linear-gradient(180deg,var(--bg),#071025);color:#e6eef8}
+#app{padding:28px;max-width:1400px;margin:0 auto}
+.header{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+.logo{width:56px;height:56px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;font-weight:700;color:#052631}
+.title{font-size:20px;font-weight:600}
+.grid{display:grid;grid-template-columns:260px 1fr;gap:20px}
+.sidebar{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+.card{background:linear-gradient(180deg,var(--card), rgba(10,18,30,0.8));border-radius:12px;padding:14px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+.server-item{padding:8px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+.server-item:hover{background:var(--glass)}
+.server-name{font-weight:600}
+.tag{font-size:12px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,0.04);color:var(--muted)}
+.main-area{display:flex;flex-direction:column;gap:12px}
+.vm-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;align-items:start}
+.vm-card{display:flex;flex-direction:column;min-height:80px;padding:12px;border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(0,0,0,0.08));overflow:visible}
+.vm-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.vm-logo{width:36px;height:36px;border-radius:6px;object-fit:cover;box-shadow:0 4px 10px rgba(0,0,0,0.5)}
+
+/* center modal / toast */
+.ui-modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);min-width:320px;max-width:80%;padding:14px 18px;border-radius:12px;background:linear-gradient(180deg,#07202a,#04121a);box-shadow:0 12px 40px rgba(2,6,23,0.8);color:#dff8ee;z-index:9999;display:none}
+.ui-modal.show{display:block}
+.ui-modal.success{border:1px solid rgba(102,255,199,0.15)}
+.ui-modal.error{border:1px solid rgba(255,102,102,0.15);color:#ffd6d6}
+.ui-modal .msg{font-size:14px}
+.nic{padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);margin-bottom:6px}
+.small{font-size:12px;color:var(--muted)}
+.empty{padding:24px;text-align:center;color:var(--muted)}
+.footer{margin-top:18px;color:var(--muted);font-size:13px}
+
+.expand-btn{margin-left:10px;padding:4px 8px;border-radius:6px;background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--accent);cursor:pointer}
+.expand-btn:hover{background:rgba(255,255,255,0.02)}
+.ip-list{margin-top:6px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.01);position:relative;z-index:2}
+.nic{padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);margin-bottom:6px;word-break:break-word}
+
+/* Topology editor styles */
+.topology-shell{display:flex;gap:12px}
+.topology-tools{display:flex;flex-direction:column;gap:8px;width:140px}
+.topology-tools button{padding:8px;border-radius:8px;background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);cursor:pointer}
+.topology-canvas{flex:1;min-width:420px}
+.topology-panel{width:320px;padding:12px}
+.tool-btn{width:100%;padding:8px;margin-bottom:6px;border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,0.02),transparent);border:1px solid rgba(255,255,255,0.03);color:var(--muted);cursor:pointer}
+.node rect{filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4))}
+.link-selected{stroke:#ffd166;stroke-width:3}
+.topology-tools input[type=file]{background:transparent;color:var(--muted)}
+
+/* Make the file input look like a small button */
+.topology-tools input[type=file]{
+  display:inline-block;
+  padding:8px 10px;
+  border-radius:8px;
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.04);
+  color:var(--muted);
+  cursor:pointer;
+}
+.topology-tools input[type=file]::file-selector-button{
+  padding:6px 10px;border-radius:6px;border:0;background:linear-gradient(90deg,rgba(255,255,255,0.02),transparent);color:inherit;cursor:pointer
+}
+
+/* Inputs inside the topology panel (name, position, rename) */
+.topology-panel input{
+  width:100%;
+  padding:6px 8px;
+  border-radius:6px;
+  border:1px solid rgba(255,255,255,0.04);
+  background:rgba(255,255,255,0.02);
+  color:inherit;
+  outline:none;
+  box-sizing:border-box;
+}
+.topology-panel input:focus{border-color:rgba(96,165,250,0.6);box-shadow:0 6px 18px rgba(96,165,250,0.06)}
+.topology-panel input[style]{ /* for the small position inputs */
+  width:auto;
+  padding:6px 8px;
+}
+
+/* make small inline inputs consistent */
+.topology-panel input[style]::-webkit-inner-spin-button, .topology-panel input[style]::-webkit-outer-spin-button{opacity:0.6}
+
+/* Clear button tweak */
+.clear-btn{background:transparent;border:1px solid rgba(255,255,255,0.04);padding:8px;border-radius:8px;color:var(--muted);cursor:pointer}
+.clear-btn:hover{background:rgba(255,255,255,0.02)}
+
+/* region input style */
+.topology-region{display:inline-block}
+.topology-region input{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.04);color:inherit;padding:6px 8px;border-radius:6px;outline:none}
+.topology-region input:focus{border-color:rgba(96,165,250,0.6);box-shadow:0 6px 18px rgba(96,165,250,0.06)}
+/* select styling for region */
+.topology-region select{
+  background:rgba(255,255,255,0.02);
+  border:1px solid rgba(255,255,255,0.08);
+  color:var(--muted);
+  padding:8px 34px 8px 10px; /* room for custom caret */
+  border-radius:8px;
+  outline:none;
+  min-width:140px;
+  appearance:none; -webkit-appearance:none; -moz-appearance:none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='8' viewBox='0 0 14 8'><path fill='%239aa8bf' d='M7 8L0 0h14z'/></svg>");
+  background-repeat:no-repeat;
+  background-position:right 10px center;
+}
+.topology-region select:focus{border-color:rgba(96,165,250,0.8);box-shadow:0 8px 28px rgba(96,165,250,0.06)}
+.topology-region select:hover{border-color:rgba(255,255,255,0.12)}
+.topology-region select::-ms-expand{display:none}
+/* make option text readable in dark theme */
+.topology-region select option{background:var(--card);color:#e6eef8;padding:6px}
+
+/* adapters list */
+.adapters{margin-top:12px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.01);color:var(--muted);font-size:13px}
+.adapters .node-block{margin-bottom:8px}
+.clear-btn{padding:8px;border-radius:8px;background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);cursor:pointer}
+
+/* compact link list */
+.compact-links{list-style:none;padding-left:0;margin:6px 0}
+.compact-links li{padding:4px 6px;border-radius:6px;background:rgba(255,255,255,0.01);margin-bottom:4px}
+.grouped-list{margin-top:6px;padding:6px;background:rgba(255,255,255,0.01);border-radius:6px}
+
+/* logs output */
+.logs{max-height:200px;overflow:auto;background:rgba(0,0,0,0.15);padding:8px;border-radius:6px;color:#dff8ee;font-size:12px;white-space:pre-wrap}
+
+/* machine selector styles */
+.machine-selector{margin-top:12px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.01)}
+.selector-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.selector-item{padding:8px;border-radius:6px;background:rgba(255,255,255,0.02)}
+.selector-title{font-weight:600;margin-bottom:6px}
+.selector-item select{width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:rgba(255,255,255,0.02);color:inherit}
