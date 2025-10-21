@@ -148,5 +148,82 @@ def api_create_ports():
         return jsonify({'ok': False, 'error': str(e), 'trace': tb, 'logs': logs}), 500
 
 
+@app.route('/api/topology/install_ports', methods=['POST'])
+def api_install_ports():
+    """POST payload:
+    {
+      region: 's05',
+      nodes: [ {id:'h1', vm:'s05-switchpc2', ip:'10.1.2.3', ...}, ... ],
+      links: [ {id:'l1', a:'h1', b:'sw1', label:'h1-sw1'}, ... ]
+    }
+    The endpoint will compute per-VM required ports and SSH to the controller to run
+    rebuild_vm_nics_govc.sh commands. Returns logs per command.
+    """
+    data = request.get_json(force=True)
+    region = data.get('region')
+    nodes = data.get('nodes') or []
+    links = data.get('links') or []
+
+    if not region:
+        return jsonify({'ok': False, 'error': 'missing region'}), 400
+
+    # build nodeId -> vmName map
+    node_to_vm = { n.get('id'): n.get('vm') for n in nodes if n.get('id') }
+
+    # build adjacency list to list link labels per node
+    node_links = { n.get('id'): [] for n in nodes if n.get('id') }
+    for l in links:
+        a = l.get('a'); b = l.get('b'); label = l.get('label') or f"{a}-{b}"
+        if a in node_links: node_links[a].append(label)
+        if b in node_links: node_links[b].append(label)
+
+    # build vm -> ports mapping
+    vm_ports = {}
+    for nid, vm in node_to_vm.items():
+        if not vm: continue
+        ports = node_links.get(nid, [])
+        vm_ports.setdefault(vm, []).extend(ports)
+
+    # load controller config
+    try:
+        from controller_config import CONTROLLER
+    except Exception:
+        return jsonify({'ok': False, 'error': 'controller configuration missing'}), 500
+
+    host = CONTROLLER.get('host')
+    user = CONTROLLER.get('user')
+    password = CONTROLLER.get('password')
+    if not host or not user:
+        return jsonify({'ok': False, 'error': 'incomplete controller configuration'}), 500
+
+    if paramiko is None:
+        return jsonify({'ok': False, 'error': 'paramiko not available on server; cannot SSH'}), 500
+
+    commands = []
+    for vm, ports in vm_ports.items():
+        if not ports: continue
+        # build command: sudo ./rebuild_vm_nics_govc.sh <region> <vm> <port1> <port2> ...
+        cmd = ['./rebuild_vm_nics_govc.sh', region, vm] + ports
+        commands.append(cmd)
+
+    results = []
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(host, username=user, password=password, timeout=10)
+        for cmd_args in commands:
+            # join safely - we will run in a shell; join with quoted args
+            safe_cmd = ' '.join([f"'{str(x)}'" for x in cmd_args])
+            stdin, stdout, stderr = client.exec_command('sudo ' + safe_cmd)
+            out = stdout.read().decode(errors='ignore')
+            err = stderr.read().decode(errors='ignore')
+            results.append({'cmd': 'sudo ' + ' '.join(cmd_args), 'stdout': out, 'stderr': err})
+        client.close()
+        return jsonify({'ok': True, 'results': results})
+    except Exception as e:
+        tb = traceback.format_exc()
+        return jsonify({'ok': False, 'error': str(e), 'trace': tb, 'results': results}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

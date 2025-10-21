@@ -129,7 +129,47 @@ body{margin:0;background:linear-gradient(180deg,var(--bg),#071025);color:#e6eef8
 
 /* machine selector styles */
 .machine-selector{margin-top:12px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.01)}
-.selector-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.selector-item{padding:8px;border-radius:6px;background:rgba(255,255,255,0.02)}
-.selector-title{font-weight:600;margin-bottom:6px}
-.selector-item select{width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:rgba(255,255,255,0.02);color:inherit}
+.selector-grid{display:flex;flex-direction:column;gap:12px}
+.hosts-column{display:flex;flex-direction:column;gap:8px}
+.hosts-column .host-item{padding:10px;border-radius:8px;background:rgba(255,255,255,0.02);display:flex;flex-direction:column;gap:6px}
+.hosts-column .host-id{font-weight:700}
+.hosts-column .host-info{display:flex;flex-direction:column;gap:4px;color:var(--muted);word-break:break-word}
+.switches-column{width:100%}
+.switch-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.switch-item{padding:10px;border-radius:8px;background:rgba(255,255,255,0.02);display:flex;flex-direction:column;align-items:center;gap:6px}
+.switch-id{font-weight:700}
+.switch-vm{color:var(--muted);word-break:break-word;text-align:center}
+.selector-col-title{font-weight:700;margin-bottom:6px}
+.host-ip{padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:rgba(255,255,255,0.02);color:inherit;width:100%}
+
+/* Enhanced selects / inputs for hosts and switches to match global aesthetic */
+.host-item select, .switch-item select{
+  width:100%;
+  padding:8px 10px;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,0.06);
+  background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.06));
+  color:var(--muted);
+  outline:none;
+  cursor:pointer;
+}
+.host-item select:focus, .switch-item select:focus{
+  border-color:rgba(96,165,250,0.6);
+  box-shadow:0 8px 24px rgba(96,165,250,0.06);
+  color:#e6eef8;
+}
+.host-item select option, .switch-item select option{background:var(--card);color:#e6eef8}
+
+.host-item .host-info{padding-top:4px}
+.host-item .host-ip{margin-left:0}
+
+/* subtle hover for host/switch cards */
+.host-item:hover, .switch-item:hover{background:rgba(255,255,255,0.035);box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+
+/* ensure the small labels are readable */
+.host-item .small, .switch-item .small{color:var(--muted);font-size:12px}
+
+/* IP color as requested (mint) */
+.ip{color: rgb(110,231,183); font-weight:600}
+/* stronger specificity to override inherited .small color rules */
+.host-item .ip, .switch-item .ip, .machine-selector .ip{ color: rgb(110,231,183) !important; font-weight:600 }

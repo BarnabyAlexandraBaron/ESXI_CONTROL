@@ -90,9 +90,13 @@ const App = {
   const regions = ref([])
   const createLogs = ref('')
   const creating = ref(false)
+  const installInProgress = ref(false)
+  const installResults = ref([])
+  const installCollapsed = ref(true)
   const topologyConfirmed = ref(false)
   const nodeVmMap = reactive({}) // nodeId -> vmName
   const availableVms = ref([]) // list of vm names for current region (filtered)
+  const hostIpMap = reactive({}) // host nodeId -> ip string
 
     async function loadRegions(){
       try{
@@ -207,7 +211,13 @@ const App = {
 
     // import/export
     function exportTopology(){
-      const out = { region: topology.region||'', meta:{created_by:'ui', timestamp: Date.now()}, nodes: topology.nodes.map(n=>({id:n.id,type:n.type,name:n.name,x:n.x,y:n.y,meta:n.meta})), links: topology.links.map(l=>({id:l.id,a:l.a,b:l.b,label:l.label,meta:l.meta})) }
+      const out = {
+        region: topology.region||'',
+        meta: { created_by:'ui', timestamp: Date.now() },
+        // include per-node assigned vm name and host IP if present
+        nodes: topology.nodes.map(n=>({ id:n.id, type:n.type, name:n.name, x:n.x, y:n.y, meta:n.meta, vm: nodeVmMap[n.id] || '', ip: hostIpMap[n.id] || '' })),
+        links: topology.links.map(l=>({ id:l.id, a:l.a, b:l.b, label:l.label, meta:l.meta }))
+      }
       const blob = new Blob([JSON.stringify(out, null, 2)], {type:'application/json'})
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url; a.download = (topology.region?topology.region+'-':'')+'topology.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
@@ -239,25 +249,56 @@ const App = {
     }
 
     async function loadRegionVmsAndAssignDefaults(){
-      // clear previous
-      for(const k in nodeVmMap) delete nodeVmMap[k]
+      // do not blindly clear nodeVmMap / hostIpMap because imported JSON may have assigned values.
+      // Only fill defaults for nodes that do not already have an assignment.
       availableVms.value = []
+      // map of vm name -> vm object for quick lookup (includes primary IP)
+      const vmInfo = {}
+      // expose for template / export
+      window.__vmInfo = vmInfo
       if(!topology.region) return
       try{
         const r = await fetch(`/api/inventory/${topology.region}`)
         const j = await r.json()
         const vms = Array.isArray(j.vms) ? j.vms : []
         // filter VMs that have nic info
-        const candidates = vms.filter(vm=>Array.isArray(vm.nics) && vm.nics.length>0).map(vm=>vm.name)
+        const candidates = vms.filter(vm=>Array.isArray(vm.nics) && vm.nics.length>0).map(vm=>{
+          // populate vmInfo with primary ip
+          vmInfo[vm.name] = { name: vm.name, primaryIp: getVmPrimaryIp(vm) || '' }
+          return vm.name
+        })
         availableVms.value = candidates
-        // derive node list (unique node ids from topology.nodes) in stable order
-        const nodes = topology.nodes.map(n=>n.id)
-        // default assign first available non-duplicate VMs to nodes
+
+        // derive node lists by type
+        const nodes = topology.nodes
+        const hostNodes = nodes.filter(n=>n.type==='host').map(n=>n.id)
+        const switchNodes = nodes.filter(n=>n.type!=='host').map(n=>n.id)
+
+        // build a set of already assigned VMs (preserve imported assignments)
+        const assigned = new Set(Object.values(nodeVmMap).filter(v=>v))
+
+        // default assign only to nodes that don't already have a vm assigned
         let idx = 0
-        for(const nid of nodes){
-          if(idx < candidates.length){ nodeVmMap[nid] = candidates[idx]; idx++ }
-          else{ nodeVmMap[nid] = '' }
+        // advance idx to first candidate that's not already assigned
+        while(idx < candidates.length && assigned.has(candidates[idx])) idx++
+        for(const nid of hostNodes.concat(switchNodes)){
+          if(nodeVmMap[nid] && nodeVmMap[nid].length>0){
+            // keep existing assignment (from import or previous selection)
+            continue
+          }
+          // find next unassigned candidate
+          while(idx < candidates.length && assigned.has(candidates[idx])) idx++
+          if(idx < candidates.length){
+            nodeVmMap[nid] = candidates[idx]
+            assigned.add(candidates[idx])
+            idx++
+          }else{
+            nodeVmMap[nid] = nodeVmMap[nid] || ''
+          }
         }
+
+        // ensure hostIpMap entries exist but do not overwrite imported values
+        for(const h of hostNodes){ if(!(h in hostIpMap)) hostIpMap[h] = '' }
       }catch(e){ showModal('加载区域虚拟机失败','error') }
     }
 
@@ -270,29 +311,110 @@ const App = {
       })
     }
 
+    function handleVmSelect(nodeId, newVm){
+      const oldVm = nodeVmMap[nodeId] || ''
+      if(!newVm){ nodeVmMap[nodeId] = ''; return }
+      // find other node currently holding newVm
+      let otherNode = null
+      for(const k of Object.keys(nodeVmMap)){
+        if(k!==nodeId && nodeVmMap[k]===newVm){ otherNode = k; break }
+      }
+      if(otherNode){
+        // swap: otherNode gets oldVm
+        nodeVmMap[otherNode] = oldVm || ''
+      }
+      nodeVmMap[nodeId] = newVm
+    }
+
+    function vmDisplayFor(nodeId){
+      const vmName = nodeVmMap[nodeId]
+      if(!vmName) return {name:'-- 未分配 --', ip: ''}
+      const info = window.__vmInfo && window.__vmInfo[vmName]
+      return { name: vmName, ip: info ? (info.primaryIp || '') : '' }
+    }
+
     function exportNodeVmMapping(){
-      // build lines like 'h1:s05-switchpc1' using topology.region
+      // build lines with header and include host IPs
       const lines = []
-      const nodes = topology.nodes.map(n=>n.id)
-      for(const nid of nodes){
+      const region = topology.region || ''
+      lines.push(`Area ${region}`)
+      // preserve node order: hosts first then switches
+      const hostNodes = topology.nodes.filter(n=>n.type==='host').map(n=>n.id)
+      const switchNodes = topology.nodes.filter(n=>n.type!=='host').map(n=>n.id)
+      for(const nid of hostNodes){
         const vm = nodeVmMap[nid] || ''
-        lines.push(`${nid}:${vm}`)
+        const ip = hostIpMap[nid] || ''
+        lines.push(`${nid} ${vm}${ip? ' ' + ip: ''}`)
+      }
+      for(const nid of switchNodes){
+        const vm = nodeVmMap[nid] || ''
+        lines.push(`${nid} ${vm}`)
       }
       const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url; a.download = (topology.region?topology.region+'-':'')+'node_vm_mapping.txt'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
     }
 
-    function importTopologyFromText(txt){
+    async function installPorts(){
+      if(!topology.region){ showModal('请选择区域', 'error'); return }
+      // build nodes array and links array from current topology and selections
+      const nodes = topology.nodes.map(n=>({ id: n.id, vm: nodeVmMap[n.id] || '', ip: hostIpMap[n.id] || '' }))
+      const links = topology.links.map(l=>({ id: l.id, a: l.a, b: l.b, label: l.label || `${l.a}-${l.b}` }))
+      installInProgress.value = true
+      installResults.value = []
+      try{
+        const payload = { region: topology.region, nodes, links }
+        const r = await fetch('/api/topology/install_ports', { method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+        const j = await r.json()
+        if(j.ok){
+          installResults.value = j.results || []
+          installCollapsed.value = false
+          showModal('安装任务已完成，查看下方结果', 'success')
+        }else{
+          showModal('安装失败: ' + (j.error || JSON.stringify(j)), 'error', 6000)
+        }
+      }catch(e){ showModal('安装出错: ' + String(e), 'error', 6000) }
+      installInProgress.value = false
+    }
+
+    async function importTopologyFromText(txt){
       try{
         const obj = JSON.parse(txt)
         // basic validation
         if(!obj.nodes || !obj.links) throw new Error('缺少 nodes 或 links')
         topology.region = obj.region || topology.region
-        topology.nodes = obj.nodes.map(n=>({ id:n.id, type:n.type, name:n.name||n.id, x:n.x||100, y:n.y||100, meta:n.meta||{} }))
+        topology.nodes = obj.nodes.map(n=>({ id:n.id, type:n.type, name:n.name||n.id, x:n.x||100, y:n.y||100, meta:n.meta||{}, vm: n.vm || '', ip: n.ip || '' }))
         topology.links = obj.links.map(l=>({ id:l.id||nextId('l'), a:l.a, b:l.b, label:l.label||`${l.a}-${l.b}`, meta:l.meta||{} }))
         topologySel.value = null
-        showModal('导入成功', 'success')
+
+        // ensure VM inventory for this region is loaded before applying imported mappings
+        await loadRegionVmsAndAssignDefaults()
+
+        // apply imported vm/ip mapping; use handleVmSelect to preserve uniqueness when possible
+        const missing = []
+        for(const n of obj.nodes){
+          if(!n || !n.id) continue
+          const nid = n.id
+          if(n.vm){
+            // if VM not in available list, still assign but note missing
+            if(!availableVms.value.includes(n.vm)) missing.push(n.vm)
+            // use swap-safe assign
+            try{ handleVmSelect(nid, n.vm) }catch(e){ nodeVmMap[nid] = n.vm }
+          }else{
+            // clear
+            nodeVmMap[nid] = ''
+          }
+          // host IP
+          hostIpMap[nid] = n.ip || ''
+        }
+
+        if(missing.length>0){
+          const uniq = Array.from(new Set(missing))
+          showModal('导入成功，但以下虚拟机在当前区域未发现: ' + uniq.join(', '), 'warning', 6000)
+        }else{
+          showModal('导入成功', 'success')
+        }
+
         topologyConfirmed.value = false
       }catch(e){ showModal('导入失败: '+String(e), 'error', 4000) }
     }
@@ -412,7 +534,9 @@ const App = {
       // regions and create ports
       regions, createPorts, createLogs, creating,
       topologyConfirmed, confirmTopology,
-      nodeVmMap, vmOptionsFor, exportNodeVmMapping
+  nodeVmMap, vmOptionsFor, exportNodeVmMapping, hostIpMap,
+  vmDisplayFor, handleVmSelect,
+      installPorts, installInProgress, installResults, installCollapsed
     }
   },
   template: `
@@ -560,7 +684,7 @@ const App = {
                   <div v-if="adapters.linkNames.length===0" class="small">无（当前无链路）</div>
                   <div v-else>
                     <!-- compact link-only list -->
-                    <div class="small">按链路（简洁）：</div>
+                    <div class="small">需要创建的端口组：</div>
                     <ul class="compact-links">
                       <li v-for="name in adapters.linkNames" :key="name">{{name}}</li>
                     </ul>
@@ -584,8 +708,8 @@ const App = {
                       </div>
                       <!-- create ports button -->
                       <div style="margin-top:10px">
-                        <button v-if="!topologyConfirmed" class="tool-btn" @click.prevent="confirmTopology">确认拓扑</button>
-                        <button v-else class="tool-btn" @click.prevent="createPorts" :disabled="creating">{{ creating ? '正在创建...' : '创建端口' }}</button>
+                        <button v-if="!topologyConfirmed" class="tool-btn" @click.prevent="confirmTopology"  style="color: #64b7e7;">确认拓扑</button>
+                        <button v-else class="tool-btn" @click.prevent="createPorts" :disabled="creating" style="color: #64b7e7;">{{ creating ? '正在创建...' : '1️⃣ESXI创建端口' }}</button>
                       </div>
                       <div style="margin-top:8px">
                         <div style="font-weight:600">创建结果</div>
@@ -596,16 +720,59 @@ const App = {
                       <div v-if="topologyConfirmed" class="machine-selector">
                         <div style="font-weight:600;margin-bottom:6px">机器选择（为代号分配实际虚拟机，选择不能重复）</div>
                         <div class="selector-grid">
-                          <div v-for="n in topology.nodes" :key="n.id" class="selector-item">
-                            <div class="selector-title">{{n.id}}</div>
-                            <select v-model="nodeVmMap[n.id]">
-                              <option value="">-- 未分配 --</option>
-                              <option v-for="opt in vmOptionsFor(n.id)" :key="opt" :value="opt">{{opt}}</option>
-                            </select>
+                          <div class="hosts-column">
+                            <div class="selector-col-title">Hosts</div>
+                            <div v-for="n in topology.nodes.filter(x=>x.type==='host')" :key="n.id" class="host-item">
+                              <div class="host-id">{{n.id}}</div>
+                              <div class="host-info">
+                                <div style="display:flex;gap:8px;align-items:center">
+                                  <select :value="nodeVmMap[n.id]" @change="e=>handleVmSelect(n.id, e.target.value)">
+                                    <option value="">-- 未分配 --</option>
+                                    <option v-for="opt in vmOptionsFor(n.id)" :key="opt" :value="opt">{{opt}}</option>
+                                  </select>
+                                  <input class="host-ip" v-model="hostIpMap[n.id]" placeholder="host IP (可选)" />
+                                </div>
+                                <div style="margin-top:4px">
+                                  <div>{{ vmDisplayFor(n.id).name }}</div>
+                                  <div class="small ip">{{ vmDisplayFor(n.id).ip }}</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="switches-column">
+                            <div class="selector-col-title">Switches</div>
+                            <div class="switch-grid">
+                              <div v-for="n in topology.nodes.filter(x=>x.type!=='host')" :key="n.id" class="switch-item">
+                                <div class="switch-id">{{n.id}}</div>
+                                <div style="width:100%">
+                                  <select :value="nodeVmMap[n.id]" @change="e=>handleVmSelect(n.id, e.target.value)" style="width:100%">
+                                    <option value="">-- 未分配 --</option>
+                                    <option v-for="opt in vmOptionsFor(n.id)" :key="opt" :value="opt">{{opt}}</option>
+                                  </select>
+                                </div>
+                                <div class="switch-vm">{{ vmDisplayFor(n.id).name }}</div>
+                                <div class="small ip">{{ vmDisplayFor(n.id).ip }}</div>
+                              </div>
+                            </div>
                           </div>
                         </div>
-                        <div style="display:flex;justify-content:flex-end;margin-top:8px">
-                          <button class="tool-btn" @click.prevent="exportNodeVmMapping">导出虚拟机选择</button>
+                        <div style="display:flex;justify-content:flex-end;margin-top:8px;flex-direction:column;gap:8px">
+                          <div style="display:flex;justify-content:flex-end;gap:8px">
+                            <button class="tool-btn" @click.prevent="exportNodeVmMapping">导出虚拟机选择</button>
+                            <button class="tool-btn" @click.prevent="installPorts" :disabled="installInProgress"  style="color: #64b7e7;">{{ installInProgress ? '安装中...' : '2️⃣VM安装端口' }}</button>
+                          </div>
+                          <div>
+                            <button class="tool-btn" style="width:100%" @click.prevent="installCollapsed = !installCollapsed">{{ installCollapsed ? '展开安装结果' : '折叠安装结果' }}</button>
+                            <div v-show="!installCollapsed" style="margin-top:8px">
+                              <div v-for="res in installResults" :key="res.cmd" class="card" style="margin-bottom:8px;padding:8px">
+                                <div style="font-weight:700">{{ res.cmd }}</div>
+                                <details>
+                                  <summary>输出 (展开/收起)</summary>
+                                  <pre class="logs">STDOUT:\n{{ res.stdout }}\nSTDERR:\n{{ res.stderr }}</pre>
+                                </details>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     </div>
