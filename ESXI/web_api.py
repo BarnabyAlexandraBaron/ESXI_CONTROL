@@ -225,5 +225,242 @@ def api_install_ports():
         return jsonify({'ok': False, 'error': str(e), 'trace': tb, 'results': results}), 500
 
 
+def _get_vm_primary_ip(esxi_key, vm_name):
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM vm WHERE esxi_key = ? AND name = ?', (esxi_key, vm_name))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return None
+    vm_id = row['id']
+    # find first IPv4 address for this VM
+    cur.execute('''
+        SELECT nic_ip.ip FROM nic_ip
+        JOIN nic ON nic.id = nic_ip.nic_id
+        WHERE nic.vm_id = ? ORDER BY nic_ip.ip
+    ''', (vm_id,))
+    for r in cur.fetchall():
+        ip = r['ip']
+        if ip and ':' not in ip:
+            conn.close()
+            return ip
+    conn.close()
+    return None
+
+
+def _get_vm_nic_external_internal_pairs(esxi_key, vm_name):
+    """Return list of {exter: <nic.name>, iner: <inner_name>} for the VM."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM vm WHERE esxi_key = ? AND name = ?', (esxi_key, vm_name))
+    row = cur.fetchone()
+    out = []
+    if not row:
+        conn.close()
+        return out
+    vm_id = row['id']
+    cur.execute('SELECT id, name FROM nic WHERE vm_id = ?', (vm_id,))
+    nic_rows = cur.fetchall()
+    for nic in nic_rows:
+        nic_id = nic['id']
+        nic_name = nic['name']
+        cur.execute('SELECT inner_name FROM inner_nic WHERE nic_id = ? LIMIT 1', (nic_id,))
+        r = cur.fetchone()
+        inner = r['inner_name'] if r else None
+        out.append({'exter': nic_name, 'iner': inner})
+    conn.close()
+    return out
+
+
+@app.route('/api/topology/configure_sw', methods=['POST'])
+def api_configure_sw():
+    """Batch configure switches: POST payload same shape as install_ports.
+    For each switch node (type!='host') find its vm, query DB for external->internal nic pairs that match the node's adjacent link labels,
+    SSH to the VM and run ./configure_sw_bea.sh <bridge> <controller_ip> 6633 <exter> <iner> ...
+    If the script is missing on the VM, upload local copy from ESXI/script and chmod +x.
+    Returns per-VM results array.
+    """
+    data = request.get_json(force=True)
+    region = data.get('region')
+    nodes = data.get('nodes') or []
+    links = data.get('links') or []
+
+    if not region:
+        return jsonify({'ok': False, 'error': 'missing region'}), 400
+
+    # build node maps
+    node_to_vm = { n.get('id'): n.get('vm') for n in nodes if n.get('id') }
+    node_type = { n.get('id'): n.get('type') for n in nodes if n.get('id') }
+
+    node_links = { n.get('id'): [] for n in nodes if n.get('id') }
+    for l in links:
+        a = l.get('a'); b = l.get('b'); label = l.get('label') or f"{a}-{b}"
+        if a in node_links: node_links[a].append(label)
+        if b in node_links: node_links[b].append(label)
+
+    # controller IP read from controller_config.CONTROLLER.host
+    try:
+        from controller_config import CONTROLLER
+    except Exception:
+        return jsonify({'ok': False, 'error': 'controller configuration missing'}), 500
+    controller_ip = CONTROLLER.get('host')
+    if not controller_ip:
+        return jsonify({'ok': False, 'error': 'controller host not configured'}), 500
+
+    # SSH credentials for VM access: prefer explicit VM_SSH config
+    try:
+        from vm_ssh_config import VM_SSH
+        ssh_user = VM_SSH.get('user')
+        ssh_pass = VM_SSH.get('password')
+    except Exception:
+        # fallback to controller config (legacy)
+        ssh_user = CONTROLLER.get('user')
+        ssh_pass = CONTROLLER.get('password')
+
+    if paramiko is None:
+        return jsonify({'ok': False, 'error': 'paramiko not available on server; cannot SSH'}), 500
+
+    results = []
+    # local script path to upload if missing
+    local_sw_script = os.path.join(os.path.dirname(__file__), 'script', 'configure_sw_bea.sh')
+
+    # iterate switch nodes
+    try:
+        for nid, vm in node_to_vm.items():
+            if not vm: continue
+            # consider only switch nodes (type != 'host')
+            if node_type.get(nid) == 'host':
+                continue
+            ports = node_links.get(nid, [])
+            # fetch nic mappings from DB
+            pairs = _get_vm_nic_external_internal_pairs(region, vm)
+            # build args: for each port label in ports, find pair with exter==label and non-null iner
+            args = []
+            for p in ports:
+                for pr in pairs:
+                    if pr.get('exter') == p and pr.get('iner'):
+                        args.extend([pr.get('exter'), pr.get('iner')])
+                        break
+
+            # skip if no args
+            if not args:
+                results.append({'cmd': f'{vm} (skip)', 'stdout': '', 'stderr': f'no external->internal pair found for node {nid} ports {ports}'})
+                continue
+
+            # get VM primary IP to SSH
+            vm_ip = _get_vm_primary_ip(region, vm)
+            if not vm_ip:
+                results.append({'cmd': f'{vm} (skip)', 'stdout': '', 'stderr': f'no reachable IP found for vm {vm}'})
+                continue
+
+            # build remote command
+            cmd_args = ['./configure_sw_bea.sh', nid, controller_ip, '6633'] + args
+            safe_cmd = ' '.join([f"'{str(x)}'" for x in cmd_args])
+
+            # SSH and ensure script exists/upload
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(vm_ip, username=ssh_user, password=ssh_pass, timeout=10)
+            sftp = client.open_sftp()
+            try:
+                try:
+                    sftp.stat('./configure_sw_bea.sh')
+                except IOError:
+                    # upload local script
+                    sftp.put(local_sw_script, 'configure_sw_bea.sh')
+                    client.exec_command('chmod +x ./configure_sw_bea.sh')
+            finally:
+                sftp.close()
+
+            stdin, stdout, stderr = client.exec_command('sudo ./configure_sw_bea.sh ' + ' '.join([f"'{x}'" for x in cmd_args[1:]]))
+            out = stdout.read().decode(errors='ignore')
+            err = stderr.read().decode(errors='ignore')
+            results.append({'cmd': ' '.join(cmd_args), 'stdout': out, 'stderr': err})
+            client.close()
+
+        return jsonify({'ok': True, 'results': results})
+    except Exception as e:
+        tb = traceback.format_exc()
+        return jsonify({'ok': False, 'error': str(e), 'trace': tb, 'results': results}), 500
+
+
+@app.route('/api/topology/configure_host', methods=['POST'])
+def api_configure_host():
+    """Batch configure hosts: for each host node (type==='host'), SSH to its VM and run ./configure_host_bea.sh <ipv6_address>
+    ipv6_address is taken from the node.ip field in payload.
+    """
+    data = request.get_json(force=True)
+    region = data.get('region')
+    nodes = data.get('nodes') or []
+    links = data.get('links') or []
+
+    if not region:
+        return jsonify({'ok': False, 'error': 'missing region'}), 400
+
+    node_to_vm = { n.get('id'): n.get('vm') for n in nodes if n.get('id') }
+    node_ip_arg = { n.get('id'): n.get('ip') for n in nodes if n.get('id') }
+    node_type = { n.get('id'): n.get('type') for n in nodes if n.get('id') }
+
+    try:
+        from vm_ssh_config import VM_SSH
+        ssh_user = VM_SSH.get('user')
+        ssh_pass = VM_SSH.get('password')
+    except Exception:
+        try:
+            from controller_config import CONTROLLER
+            ssh_user = CONTROLLER.get('user')
+            ssh_pass = CONTROLLER.get('password')
+        except Exception:
+            return jsonify({'ok': False, 'error': 'vm ssh configuration missing'}), 500
+
+    if paramiko is None:
+        return jsonify({'ok': False, 'error': 'paramiko not available on server; cannot SSH'}), 500
+
+    results = []
+    local_host_script = os.path.join(os.path.dirname(__file__), 'script', 'configure_host_bea.sh')
+
+    try:
+        for nid, vm in node_to_vm.items():
+            if not vm: continue
+            if node_type.get(nid) != 'host':
+                continue
+            ipv6 = node_ip_arg.get(nid) or ''
+            if not ipv6:
+                results.append({'cmd': f'{vm} (skip)', 'stdout': '', 'stderr': f'no ipv6 argument provided for host {nid}'})
+                continue
+
+            vm_ip = _get_vm_primary_ip(region, vm)
+            if not vm_ip:
+                results.append({'cmd': f'{vm} (skip)', 'stdout': '', 'stderr': f'no reachable IP found for vm {vm}'})
+                continue
+
+            cmd_args = ['./configure_host_bea.sh', ipv6]
+
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(vm_ip, username=ssh_user, password=ssh_pass, timeout=10)
+            sftp = client.open_sftp()
+            try:
+                try:
+                    sftp.stat('./configure_host_bea.sh')
+                except IOError:
+                    sftp.put(local_host_script, 'configure_host_bea.sh')
+                    client.exec_command('chmod +x ./configure_host_bea.sh')
+            finally:
+                sftp.close()
+
+            stdin, stdout, stderr = client.exec_command('./configure_host_bea.sh ' + f"'{ipv6}'")
+            out = stdout.read().decode(errors='ignore')
+            err = stderr.read().decode(errors='ignore')
+            results.append({'cmd': './configure_host_bea.sh ' + ipv6, 'stdout': out, 'stderr': err})
+            client.close()
+
+        return jsonify({'ok': True, 'results': results})
+    except Exception as e:
+        tb = traceback.format_exc()
+        return jsonify({'ok': False, 'error': str(e), 'trace': tb, 'results': results}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

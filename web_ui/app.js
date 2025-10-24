@@ -93,6 +93,12 @@ const App = {
   const installInProgress = ref(false)
   const installResults = ref([])
   const installCollapsed = ref(true)
+  const swInProgress = ref(false)
+  const hostInProgress = ref(false)
+  const swResults = ref([])
+  const hostResults = ref([])
+  const swCollapsed = ref(true)
+  const hostCollapsed = ref(true)
   const topologyConfirmed = ref(false)
   const nodeVmMap = reactive({}) // nodeId -> vmName
   const availableVms = ref([]) // list of vm names for current region (filtered)
@@ -377,6 +383,40 @@ const App = {
       installInProgress.value = false
     }
 
+    // batch configure sw: call backend /api/topology/configure_sw with current topology, nodes, links
+    async function batchConfigureSw(){
+      if(!topology.region){ showModal('请选择区域', 'error'); return }
+      const nodes = topology.nodes.map(n=>({ id: n.id, vm: nodeVmMap[n.id] || '', ip: hostIpMap[n.id] || '', type: n.type }))
+      const links = topology.links.map(l=>({ id: l.id, a: l.a, b: l.b, label: l.label || `${l.a}-${l.b}` }))
+      swInProgress.value = true
+      swResults.value = []
+      try{
+        const payload = { region: topology.region, nodes, links }
+        const r = await fetch('/api/topology/configure_sw', { method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+        const j = await r.json()
+        if(j.ok){ swResults.value = j.results || []; swCollapsed.value = false; showModal('批量配置sw完成，查看下方结果', 'success') }
+        else { showModal('批量配置sw 失败: ' + (j.error || JSON.stringify(j)), 'error', 6000) }
+      }catch(e){ showModal('批量配置sw 出错: ' + String(e), 'error', 6000) }
+      swInProgress.value = false
+    }
+
+    // batch configure host: call backend /api/topology/configure_host with current topology, nodes, links
+    async function batchConfigureHost(){
+      if(!topology.region){ showModal('请选择区域', 'error'); return }
+      const nodes = topology.nodes.map(n=>({ id: n.id, vm: nodeVmMap[n.id] || '', ip: hostIpMap[n.id] || '', type: n.type }))
+      const links = topology.links.map(l=>({ id: l.id, a: l.a, b: l.b, label: l.label || `${l.a}-${l.b}` }))
+      hostInProgress.value = true
+      hostResults.value = []
+      try{
+        const payload = { region: topology.region, nodes, links }
+        const r = await fetch('/api/topology/configure_host', { method:'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+        const j = await r.json()
+        if(j.ok){ hostResults.value = j.results || []; hostCollapsed.value = false; showModal('批量配置host完成，查看下方结果', 'success') }
+        else { showModal('批量配置host 失败: ' + (j.error || JSON.stringify(j)), 'error', 6000) }
+      }catch(e){ showModal('批量配置host 出错: ' + String(e), 'error', 6000) }
+      hostInProgress.value = false
+    }
+
     async function importTopologyFromText(txt){
       try{
         const obj = JSON.parse(txt)
@@ -536,7 +576,9 @@ const App = {
       topologyConfirmed, confirmTopology,
   nodeVmMap, vmOptionsFor, exportNodeVmMapping, hostIpMap,
   vmDisplayFor, handleVmSelect,
-      installPorts, installInProgress, installResults, installCollapsed
+      installPorts, installInProgress, installResults, installCollapsed,
+      batchConfigureSw, batchConfigureHost,
+      swInProgress, hostInProgress, swResults, hostResults, swCollapsed, hostCollapsed
     }
   },
   template: `
@@ -714,6 +756,40 @@ const App = {
                       <div style="margin-top:8px">
                         <div style="font-weight:600">创建结果</div>
                         <pre class="logs" v-if="createLogs">{{ createLogs }}</pre>
+                      </div>
+
+                      <!-- persistent batch buttons: always visible even if topologyConfirmed is false -->
+                      <div style="display:flex;gap:8px;margin-top:8px">
+                        <button class="tool-btn" @click.prevent="batchConfigureSw" :disabled="swInProgress">{{ swInProgress ? '批量配置中...' : '批量配置sw' }}</button>
+                        <button class="tool-btn" @click.prevent="batchConfigureHost" :disabled="hostInProgress">批量配置host</button>
+                      </div>
+
+                      <!-- SW results panel -->
+                      <div style="margin-top:8px">
+                        <button class="tool-btn" @click.prevent="swCollapsed = !swCollapsed">{{ swCollapsed ? '展开 SW 结果' : '折叠 SW 结果' }}</button>
+                        <div v-show="!swCollapsed" style="margin-top:8px">
+                          <div v-for="res in swResults" :key="res.cmd" class="card" style="margin-bottom:8px;padding:8px">
+                            <div style="font-weight:700">{{ res.cmd }}</div>
+                            <details>
+                              <summary>输出 (展开/收起)</summary>
+                              <pre class="logs">STDOUT:\n{{ res.stdout }}\nSTDERR:\n{{ res.stderr }}</pre>
+                            </details>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Host results panel -->
+                      <div style="margin-top:8px">
+                        <button class="tool-btn" @click.prevent="hostCollapsed = !hostCollapsed">{{ hostCollapsed ? '展开 Host 结果' : '折叠 Host 结果' }}</button>
+                        <div v-show="!hostCollapsed" style="margin-top:8px">
+                          <div v-for="res in hostResults" :key="res.cmd" class="card" style="margin-bottom:8px;padding:8px">
+                            <div style="font-weight:700">{{ res.cmd }}</div>
+                            <details>
+                              <summary>输出 (展开/收起)</summary>
+                              <pre class="logs">STDOUT:\n{{ res.stdout }}\nSTDERR:\n{{ res.stderr }}</pre>
+                            </details>
+                          </div>
+                        </div>
                       </div>
 
                       <!-- machine selector: only show after topology confirmed -->
